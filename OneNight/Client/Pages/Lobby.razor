@@ -1,0 +1,125 @@
+﻿@page "/"
+@using Microsoft.AspNetCore.SignalR.Client;
+@using OneNight.Shared;
+@using System.Text.Json;
+@using System.Text;
+@using OneNight.Shared.Dto;
+
+@inject NavigationManager Navigation
+@inject HttpClient Http
+@implements IAsyncDisposable
+
+
+<PageTitle>Index</PageTitle>
+
+<h1>One Night!</h1>
+
+
+@if (!this.isInLobby)
+{
+    <div class="form-group">
+        <label>
+            Username:
+            <input @bind="userName" />
+        </label>
+    </div>
+    <button @onclick="CreateGame" disabled="@(string.IsNullOrEmpty(userName))">Create new lobby</button>
+
+    <div class="form-group">
+        <label>
+            Username:
+            <input @bind="userName" />
+        </label>
+    </div>
+    <div class="form-group">
+        <label>
+            Lobby code:
+            <input @bind="gameId" size="50" />
+        </label>
+    </div>
+
+    <button @onclick="JoinLobby" disabled="@(string.IsNullOrEmpty(userName))">Join lobby</button>
+}
+else
+{
+    <h1>You are in lobby: @this.gameId</h1>
+    <h2>Players:</h2>
+    @foreach (var player in this.PlayersInLobby)
+    {
+        <p>@player</p>
+    }
+}
+
+@code {
+    private HubConnection? hubConnection;
+    private bool isInLobby = false;
+    private string? gameId = null;
+    private string userName = string.Empty;
+    private List<string> PlayersInLobby = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        hubConnection = new HubConnectionBuilder()
+            .WithUrl(Navigation.ToAbsoluteUri("/gamehub"))
+            .Build();
+
+        hubConnection.On<string>("GameStarted", (gameId) =>
+        {
+            StateHasChanged();
+        });
+
+        hubConnection.On<string, string>("PlayerJoined", (gameId, userName) =>
+        {
+            if (this.gameId == gameId)
+            {
+                this.UpdatePlayerListAsync().Wait();
+                StateHasChanged();
+            }
+        });
+
+        await hubConnection.StartAsync();
+    }
+
+    private async Task CreateGame()
+    {
+        //mock
+        List<CharacterType> cards = new List<CharacterType> { CharacterType.Minion, CharacterType.Werewolf };
+
+        var content = new StringContent(JsonSerializer.Serialize(cards), Encoding.UTF8, "application/json");
+        var result = await Http.PostAsync("game/init-game", content);
+        this.gameId = await result.Content.ReadAsStringAsync();
+        this.isInLobby = true;
+        await JoinLobby();
+    }
+
+    private async Task JoinLobby()
+    {
+        JoinLobbyDto dto = new() { GameId = this.gameId!, UserName = this.userName };
+        var content = new StringContent(JsonSerializer.Serialize(dto), Encoding.UTF8, "application/json");
+        await Http.PostAsync($"game/{gameId}/join", content);
+        this.isInLobby = true;
+        await this.UpdatePlayerListAsync();
+    }
+
+    private async Task UpdatePlayerListAsync()
+    {
+        var result = await Http.GetAsync($"game/users?gameId={this.gameId}");
+        this.PlayersInLobby = JsonSerializer.Deserialize<List<string>>(result.Content.ReadAsStringAsync().Result);
+        foreach (var item in PlayersInLobby)
+        {
+            Console.WriteLine(item);
+        }
+        this.StateHasChanged();
+    }
+
+    public bool IsConnected =>
+        hubConnection?.State == HubConnectionState.Connected;
+
+    public async ValueTask DisposeAsync()
+    {
+        if (hubConnection is not null)
+        {
+            await hubConnection.DisposeAsync();
+        }
+    }
+}
